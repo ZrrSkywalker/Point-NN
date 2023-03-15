@@ -1,6 +1,6 @@
 # Parameter is Not All You Need
 
-Official implementation of ['Parameter is Not All You Need: Starting from Non-Parametric Networks for 3D Point Cloud Analysis'](https://github.com/ZrrSkywalker/Point-NN/blob/main/Point-NN_arxiv.pdf).
+Official implementation of ['Parameter is Not All You Need: Starting from Non-Parametric Networks for 3D Point Cloud Analysis'](https://arxiv.org/pdf/2303.08134.pdf).
 
 The paper has been accepted by **CVPR 2023** 🔥.
 
