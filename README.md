@@ -4,6 +4,8 @@ Official implementation of ['Parameter is Not All You Need: Starting from Non-Pa
 
 The paper has been accepted by **CVPR 2023** 🔥.
 
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/parameter-is-not-all-you-need-starting-from/training-free-3d-point-cloud-classification)](https://paperswithcode.com/sota/training-free-3d-point-cloud-classification?p=parameter-is-not-all-you-need-starting-from)
+
 ## News
 * For the first time, we conduct 3D analysis entirely requiring $\color{darkorange}{No\ Parameter\ or\ Training\.}$ 💥
 * The code of Point-NN for shape classification has been released. 
