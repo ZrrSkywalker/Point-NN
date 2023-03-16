@@ -10,7 +10,7 @@ The paper has been accepted by **CVPR 2023** 🔥.
 
 ## News
 * For the first time, we conduct 3D analysis entirely requiring $\color{darkorange}{No\ Parameter\ or\ Training\.}$ 💥
-* The code of Point-NN for shape classification has been released. 
+* The code of Point-NN for shape classification and part segmentation have been released. 
 * Point-PN and Point-NN for other 3D tasks will be open-sourced soon 📌.
 
 ## Introduction
