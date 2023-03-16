@@ -63,6 +63,13 @@ python run_nn_cls.py --dataset scan --split 1
 ```
 Please indicate the splits at `--split` by `1,2,3` for OBJ-BG, OBJ-ONLY, and PB-T50-RS, respectively.
 
+### Part Segmentation
+For ShapeNetPart, Point-NN takes **7 minutes** to achieve 71.5% mIOU (70.4% in the paper), just run:
+```bash
+python run_nn_seg.py
+```
+
+You can increase the point number `--points` and k-NN neighbors `--k` into `2048` and `128`, which further acheives **74%** with 18 minutes.
 
 ## Citation
 ```bash
