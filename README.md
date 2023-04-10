@@ -73,6 +73,8 @@ You can increase the point number `--points` and k-NN neighbors `--k` into `2048
 ## Point-PN
 ### Shape Classification
 
+Point-PN is the parametric version of Point-NN with efficient parameters and simple 3D operators.
+
 For ModelNet40 dataset, just run:
 ```bash
 python run_pn_mn40.py --msg <output filename>
