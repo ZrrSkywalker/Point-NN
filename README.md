@@ -10,8 +10,8 @@ The paper has been accepted by **CVPR 2023** 🔥.
 
 ## News
 * For the first time, we conduct 3D analysis entirely requiring $\color{darkorange}{No\ Parameter\ or\ Training\.}$ 💥
+* The code of Point-PN has been released 📌.
 * The code of Point-NN for shape classification and part segmentation has been released. 
-* Point-PN and Point-NN for other 3D tasks will be open-sourced soon 📌.
 
 ## Introduction
 We present a **N**on-parametric **N**etwork for 3D point cloud analysis, **Point-NN**, which consists of purely non-learnable components. Surprisingly, requiring no parameters or training, it performs well on various 3D tasks, and even surpasses existing fully trained models. Starting from this basic non-parametric model, we propose two extensions. 
@@ -68,8 +68,22 @@ For ShapeNetPart, Point-NN takes **7 minutes** to achieve 71.5% mIOU (70.4% in t
 ```bash
 python run_nn_seg.py
 ```
-
 You can increase the point number `--points` and k-NN neighbors `--k` into `2048` and `128`, which further acheives **74%** with 18 minutes.
+
+## Point-PN
+### Shape Classification
+
+For ModelNet40 dataset, just run:
+```bash
+python run_pn_mn40.py --msg <output filename>
+```
+
+For ScanObjectNN dataset, just run:
+```bash
+python run_pn_scan.py --split 1 --msg <output filename>
+```
+Please indicate the splits at `--split` by `1,2,3` for OBJ-BG, OBJ-ONLY, and PB-T50-RS, respectively.
+
 
 ## Citation
 ```bash
