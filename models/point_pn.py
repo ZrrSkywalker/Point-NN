@@ -1,217 +1,275 @@
-"""
-ScanObjectNN download: http://103.24.77.34/scanobjectnn/h5_files.zip
-"""
-
-import collections
-import h5py
-import numpy as np
-import os
-import pickle
-from pointnet2_ops import pointnet2_utils
-from scipy.linalg import expm, norm
+# Parametric Networks for 3D Point Cloud Classification
 import torch
-from torch.utils.data import Dataset
-os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-import pdb
+import torch.nn as nn
+from pointnet2_ops import pointnet2_utils
+
+from .model_utils import *
 
 
-def fps(data, number):
-    '''
-        data B N C
-        number int
-    '''
-    fps_idx = pointnet2_utils.furthest_point_sample(data[:,:, :3].contiguous(), number) 
-    fps_data = torch.gather(data, 1, fps_idx.unsqueeze(-1).long().expand(-1, -1, data.shape[-1]))
-    return fps_data
+
+# FPS + k-NN
+class FPS_kNN(nn.Module):
+    def __init__(self, group_num, k_neighbors):
+        super().__init__()
+        self.group_num = group_num
+        self.k_neighbors = k_neighbors
+
+    def forward(self, xyz, x):
+        B, N, _ = xyz.shape
+
+        # FPS
+        fps_idx = pointnet2_utils.furthest_point_sample(xyz, self.group_num).long() 
+        lc_xyz = index_points(xyz, fps_idx)
+        lc_x = index_points(x, fps_idx)
+
+        # kNN
+        knn_idx = knn_point(self.k_neighbors, xyz, lc_xyz)
+        knn_xyz = index_points(xyz, knn_idx)
+        knn_x = index_points(x, knn_idx)
+
+        return lc_xyz, lc_x, knn_xyz, knn_x
 
 
-def load_scanobjectnn_data(split, partition):
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-    if split == 1:
-        DATA_DIR = BASE_DIR + '/../data/h5_files/main_split/'
-        h5_name = DATA_DIR + partition + '_objectdataset.h5'
-    elif split == 2:
-        DATA_DIR = BASE_DIR + '/../data/h5_files/main_split_nobg/'
-        h5_name = DATA_DIR + partition + '_objectdataset.h5'
-    elif split == 3:
-        DATA_DIR = BASE_DIR + '/../data/h5_files/main_split/'
-        h5_name = DATA_DIR + partition + '_objectdataset_augmentedrot_scale75.h5'
-
-    f = h5py.File(h5_name, mode="r")
-    data = f['data'][:].astype('float32')
-    label = f['label'][:].astype('int64')
-    f.close()
-
-    if partition == 'test':
-        precomputed_path = os.path.join(DATA_DIR, f'{partition}_objectdataset_augmentedrot_scale75_1024_fps.pkl')
-        if not os.path.exists(precomputed_path):
-            data = torch.from_numpy(data).to(torch.float32).cuda()
-            data = fps(data, 1024).cpu().numpy()
-            with open(precomputed_path, 'wb') as f:
-                pickle.dump(data, f)
-        else:
-            with open(precomputed_path, 'rb') as f:
-                data = pickle.load(f)
-    return data, label
+# Local Geometry Aggregation
+class LGA(nn.Module):
+    def __init__(self, out_dim, alpha, beta, block_num, dim_expansion, type):
+        super().__init__()
+        self.type = type
+        self.geo_extract = PosE_Geo(3, out_dim, alpha, beta)
+        if dim_expansion == 1:
+            expand = 2
+        elif dim_expansion == 2:
+            expand = 1
+        self.linear1 = Linear1Layer(out_dim * expand, out_dim, bias=False)
+        self.linear2 = []
+        for i in range(block_num):
+            self.linear2.append(Linear2Layer(out_dim, bias=True))
+        self.linear2 = nn.Sequential(*self.linear2)
 
 
-def translate_pointcloud(pointcloud):
-    xyz1 = np.random.uniform(low=2. / 3., high=3. / 2., size=[3])
-    xyz2 = np.random.uniform(low=-0.2, high=0.2, size=[3])
+    def forward(self, lc_xyz, lc_x, knn_xyz, knn_x):
 
-    translated_pointcloud = np.add(np.multiply(pointcloud, xyz1), xyz2).astype('float32')
-    return translated_pointcloud
+        # Normalization
+        if self.type == 'mn40':
+            mean_xyz = lc_xyz.unsqueeze(dim=-2)
+            std_xyz = torch.std(knn_xyz - mean_xyz)
+            knn_xyz = (knn_xyz - mean_xyz) / (std_xyz + 1e-5)
+
+        elif self.type == 'scan':
+            knn_xyz = knn_xyz.permute(0, 3, 1, 2)
+            knn_xyz -= lc_xyz.permute(0, 2, 1).unsqueeze(-1)
+            knn_xyz /= torch.abs(knn_xyz).max(dim=-1, keepdim=True)[0]
+            knn_xyz = knn_xyz.permute(0, 2, 3, 1)
+
+        # Feature Expansion
+        B, G, K, C = knn_x.shape
+        knn_x = torch.cat([knn_x, lc_x.reshape(B, G, 1, -1).repeat(1, 1, K, 1)], dim=-1)
+
+        # Linear
+        knn_xyz = knn_xyz.permute(0, 3, 1, 2)
+        knn_x = knn_x.permute(0, 3, 1, 2)
+        knn_x = self.linear1(knn_x.reshape(B, -1, G*K)).reshape(B, -1, G, K)
+
+        # Geometry Extraction
+        knn_x_w = self.geo_extract(knn_xyz, knn_x)
+
+        # Linear
+        for layer in self.linear2:
+            knn_x_w = layer(knn_x_w)
+
+        return knn_x_w
 
 
-class PointsToTensor(object):
-    def __init__(self, **kwargs):
-        pass
+# Pooling
+class Pooling(nn.Module):
+    def __init__(self, out_dim):
+        super().__init__()
 
-    def __call__(self, data):  
-        keys = data.keys() if callable(data.keys) else data.keys
-        for key in keys:
-            if not torch.is_tensor(data[key]):
-                data[key] = torch.from_numpy(np.array(data[key]))
-        return data
+    def forward(self, knn_x_w):
+        # Feature Aggregation (Pooling)
+        lc_x = knn_x_w.max(-1)[0] + knn_x_w.mean(-1)
+        return lc_x
+    
+
+# Linear layer 1
+class Linear1Layer(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=1, bias=True):
+        super(Linear1Layer, self).__init__()
+        self.act = nn.ReLU(inplace=True)
+        self.net = nn.Sequential(
+            nn.Conv1d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, bias=bias),
+            nn.BatchNorm1d(out_channels),
+            self.act
+        )
+
+    def forward(self, x):
+        return self.net(x)
 
 
-class PointCloudScaling(object):
-    def __init__(self, 
-                 scale=[2. / 3, 3. / 2], 
-                 anisotropic=True,
-                 scale_xyz=[True, True, True],
-                 symmetries=[0, 0, 0],  # mirror scaling, x --> -x
-                 **kwargs):
-        self.scale_min, self.scale_max = np.array(scale).astype(np.float32)
-        self.anisotropic = anisotropic
-        self.scale_xyz = scale_xyz
-        self.symmetries = torch.from_numpy(np.array(symmetries))
+# Linear Layer 2
+class Linear2Layer(nn.Module):
+    def __init__(self, in_channels, kernel_size=1, groups=1, bias=True):
+        super(Linear2Layer, self).__init__()
+
+        self.act = nn.ReLU(inplace=True)
+        self.net1 = nn.Sequential(
+            nn.Conv2d(in_channels=in_channels, out_channels=int(in_channels/2),
+                    kernel_size=kernel_size, groups=groups, bias=bias),
+            nn.BatchNorm2d(int(in_channels/2)),
+            self.act
+        )
+        self.net2 = nn.Sequential(
+                nn.Conv2d(in_channels=int(in_channels/2), out_channels=in_channels,
+                          kernel_size=kernel_size, bias=bias),
+                nn.BatchNorm2d(in_channels)
+            )
+
+    def forward(self, x):
+        return self.act(self.net2(self.net1(x)) + x)
+    
+
+# PosE for Local Geometry Extraction
+class PosE_Geo(nn.Module):
+    def __init__(self, in_dim, out_dim, alpha, beta):
+        super().__init__()
+        self.in_dim = in_dim
+        self.out_dim = out_dim
+        self.alpha, self.beta = alpha, beta
+   
         
-    def __call__(self, data):
-        device = data['pos'].device if hasattr(data, 'keys') else data.device
-        scale = torch.rand(3 if self.anisotropic else 1, dtype=torch.float32, device=device) * (
-                self.scale_max - self.scale_min) + self.scale_min
-        symmetries = torch.round(torch.rand(3, device=device)) * 2 - 1
-        self.symmetries = self.symmetries.to(device)
-        symmetries = symmetries * self.symmetries + (1 - self.symmetries)
-        scale *= symmetries
-        for i, s in enumerate(self.scale_xyz):
-            if not s: scale[i] = 1
-        if hasattr(data, 'keys'):
-            data['pos'] *= scale
-        else:
-            data *= scale
-        return data
+    def forward(self, knn_xyz, knn_x):
+        B, _, G, K = knn_xyz.shape
+        feat_dim = self.out_dim // (self.in_dim * 2)
 
+        feat_range = torch.arange(feat_dim).float().cuda()     
+        dim_embed = torch.pow(self.alpha, feat_range / feat_dim)
+        div_embed = torch.div(self.beta * knn_xyz.unsqueeze(-1), dim_embed)
 
-class PointCloudCenterAndNormalize(object):
-    def __init__(self, centering=True,
-                 normalize=True,
-                 gravity_dim=2,
-                 append_xyz=False, 
-                 **kwargs):
-        self.centering = centering
-        self.normalize = normalize
-        self.gravity_dim = gravity_dim
-        self.append_xyz = append_xyz
+        sin_embed = torch.sin(div_embed)
+        cos_embed = torch.cos(div_embed)
+        position_embed = torch.cat([sin_embed, cos_embed], -1)
+        position_embed = position_embed.permute(0, 1, 4, 2, 3).contiguous()
+        position_embed = position_embed.view(B, self.out_dim, G, K)
 
-    def __call__(self, data):
-        if hasattr(data, 'keys'):
-            if self.append_xyz:
-                data['heights'] = data['pos'] - torch.min(data['pos'])
-            else:
-                height = data['pos'][:, self.gravity_dim:self.gravity_dim+1]
-                data['heights'] = height - torch.min(height)
-            
-            if self.centering:
-                data['pos'] = data['pos'] - torch.mean(data['pos'], axis=0, keepdims=True)
-            
-            if self.normalize:
-                m = torch.max(torch.sqrt(torch.sum(data['pos'] ** 2, axis=-1, keepdims=True)), axis=0, keepdims=True)[0]
-                data['pos'] = data['pos'] / m
-        else:
-            if self.centering:
-                data = data - torch.mean(data, axis=-1, keepdims=True)
-            if self.normalize:
-                m = torch.max(torch.sqrt(torch.sum(data ** 2, axis=-1, keepdims=True)), axis=0, keepdims=True)[0]
-                data = data / m
-        return data
+        # Weigh
+        knn_x_w = knn_x + position_embed
+        knn_x_w *= position_embed
 
+        return knn_x_w
 
-class PointCloudRotation(object):
-    def __init__(self, angle=[0, 0, 0], **kwargs):
-        self.angle = np.array(angle) * np.pi
+    
+# Parametric Encoder
+class EncP(nn.Module):  
+    def __init__(self, in_channels, input_points, num_stages, embed_dim, k_neighbors, alpha, beta, LGA_block, dim_expansion, type):
+        super().__init__()
+        self.input_points = input_points
+        self.num_stages = num_stages
+        self.embed_dim = embed_dim
+        self.alpha, self.beta = alpha, beta
 
-    @staticmethod
-    def M(axis, theta):
-        return expm(np.cross(np.eye(3), axis / norm(axis) * theta))
+        # Raw-point Embedding
+        self.raw_point_embed = Linear1Layer(in_channels, self.embed_dim, bias=False)
 
-    def __call__(self, data):
-        if hasattr(data, 'keys'):
-            device = data['pos'].device
-        else:
-            device = data.device
-
-        if isinstance(self.angle, collections.Iterable):
-            rot_mats = []
-            for axis_ind, rot_bound in enumerate(self.angle):
-                theta = 0
-                axis = np.zeros(3)
-                axis[axis_ind] = 1
-                if rot_bound is not None:
-                    theta = np.random.uniform(-rot_bound, rot_bound)
-                rot_mats.append(self.M(axis, theta))
-            # Use random order
-            np.random.shuffle(rot_mats)
-            rot_mat = torch.tensor(rot_mats[0] @ rot_mats[1] @ rot_mats[2], dtype=torch.float32, device=device)
-        else:
-            raise ValueError()
-        if hasattr(data, 'keys'):
-            data['pos'] = data['pos'] @ rot_mat.T
-            if 'normals' in data:
-                data['normals'] = data['normals'] @ rot_mat.T
-        else:
-            data = data @ rot_mat.T
-        return data
-
-
-class ScanObjectNN(Dataset):
-    def __init__(self, num_points=2048, split=3, partition='training'):
-        self.data, self.label = load_scanobjectnn_data(split, partition)
-        self.num_points = num_points
-        self.partition = partition
-
-    def __getitem__(self, item):
-        pointcloud = self.data[item][:self.num_points]
-        label = self.label[item]
-        if self.partition == 'training':
-            # pointcloud = translate_pointcloud(pointcloud)
-            np.random.shuffle(pointcloud)
-        data = {'pos': pointcloud, 'y': label}
-
-        if self.partition == 'training':
-            data = PointsToTensor()(data)
-            data = PointCloudScaling(scale=[0.9, 1.1])(data)
-            data = PointCloudCenterAndNormalize(gravity_dim=1)(data)
-            data = PointCloudRotation(angle=[0.0, 1.0, 0.0])(data)
-        elif self.partition == 'test':
-            data = PointsToTensor()(data)
-            data = PointCloudCenterAndNormalize(gravity_dim=1)(data)
+        self.FPS_kNN_list = nn.ModuleList() # FPS, kNN
+        self.LGA_list = nn.ModuleList() # Local Geometry Aggregation
+        self.Pooling_list = nn.ModuleList() # Pooling
         
-        if 'heights' in data.keys():
-            data['x'] = torch.cat((data['pos'], data['heights']), dim=1)
-        else:
-            data['x'] = torch.cat((data['pos'], torch.from_numpy(pointcloud[:, 1:2] - pointcloud[:, 1:2].min())), dim=1)
-        return data['x'], data['pos'], label
+        out_dim = self.embed_dim
+        group_num = self.input_points
 
-    def __len__(self):
-        return self.data.shape[0]
+        # Multi-stage Hierarchy
+        for i in range(self.num_stages):
+            out_dim = out_dim * dim_expansion[i]
+            group_num = group_num // 2
+            self.FPS_kNN_list.append(FPS_kNN(group_num, k_neighbors))
+            self.LGA_list.append(LGA(out_dim, self.alpha, self.beta, LGA_block[i], dim_expansion[i], type))
+            self.Pooling_list.append(Pooling(out_dim))
 
 
-if __name__ == '__main__':
-    train = ScanObjectNN(1024)
-    test = ScanObjectNN(1024, 'test')
-    for data, label in train:
-        print(data.shape)
-        print(label)
+    def forward(self, xyz, x):
+
+        # Raw-point Embedding
+        # pdb.set_trace()
+        x = self.raw_point_embed(x)
+
+        # Multi-stage Hierarchy
+        for i in range(self.num_stages):
+            # FPS, kNN
+            xyz, lc_x, knn_xyz, knn_x = self.FPS_kNN_list[i](xyz, x.permute(0, 2, 1))
+            # Local Geometry Aggregation
+            knn_x_w = self.LGA_list[i](xyz, lc_x, knn_xyz, knn_x)
+            # Pooling
+            x = self.Pooling_list[i](knn_x_w)
+
+        # Global Pooling
+        x = x.max(-1)[0] + x.mean(-1)
+        return x
+
+
+# Parametric Network for ModelNet40
+class Point_PN_mn40(nn.Module):
+    def __init__(self, in_channels=3, class_num=40, input_points=1024, num_stages=4, embed_dim=36, k_neighbors=40, beta=100, alpha=1000, LGA_block=[2,1,1,1], dim_expansion=[2,2,2,1], type='mn40'):
+        super().__init__()
+        # Parametric Encoder
+        self.EncP = EncP(in_channels, input_points, num_stages, embed_dim, k_neighbors, alpha, beta, LGA_block, dim_expansion, type)
+        self.out_channel = embed_dim
+        for i in dim_expansion:
+            self.out_channel *= i
+        self.classifier = nn.Sequential(
+            nn.Linear(self.out_channel, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(256, class_num)
+        )
+
+
+    def forward(self, x):
+        # xyz: point coordinates
+        # x: point features
+        xyz = x.permute(0, 2, 1)
+
+        # Parametric Encoder
+        x = self.EncP(xyz, x)
+
+        # Classifier
+        x = self.classifier(x)
+        return x
+    
+
+# Parametric Network for ScanObjectNN
+class Point_PN_scan(nn.Module):
+    def __init__(self, in_channels=4, class_num=15, input_points=1024, num_stages=4, embed_dim=36, k_neighbors=40, beta=100, alpha=1000, LGA_block=[2,1,1,1], dim_expansion=[2,2,2,1], type='scan'):
+        super().__init__()
+        # Parametric Encoder
+        self.EncP = EncP(in_channels, input_points, num_stages, embed_dim, k_neighbors, alpha, beta, LGA_block, dim_expansion, type)
+        self.out_channel = embed_dim
+        for i in dim_expansion:
+            self.out_channel *= i
+        self.classifier = nn.Sequential(
+            nn.Linear(self.out_channel, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.5),
+            nn.Linear(256, class_num)
+        )
+
+
+    def forward(self, x, xyz):
+        # xyz: point coordinates
+        # x: point features
+
+        # Parametric Encoder
+        x = self.EncP(xyz, x)
+
+        # Classifier
+        x = self.classifier(x)
+        return x
