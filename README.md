@@ -89,10 +89,10 @@ Please indicate the splits at `--split` by `1,2,3` for OBJ-BG, OBJ-ONLY, and PB-
 
 ## Citation
 ```bash
-@inproceedings{zhang2023parameter,
-  title={Parameter is Not All You Need: Starting from Non-Parametric Networks for 3D Point Cloud Analysis},
+@article{zhang2023parameter,
+  title={Parameter is not all you need: Starting from non-parametric networks for 3d point cloud analysis},
   author={Zhang, Renrui and Wang, Liuhui and Wang, Yali and Gao, Peng and Li, Hongsheng and Shi, Jianbo},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  journal={arXiv preprint arXiv:2303.08134},
   year={2023}
 }
 ```
