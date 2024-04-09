@@ -9,6 +9,8 @@ The paper has been accepted by **CVPR 2023** 🔥.
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/parameter-is-not-all-you-need-starting-from/training-free-3d-part-segmentation-on)](https://paperswithcode.com/sota/training-free-3d-part-segmentation-on?p=parameter-is-not-all-you-need-starting-from)
 
 ## News
+* **Seg-NN** has been accepted as ***CVPR 2024 Highlight Paper*** 🔥!
+* We release [Seg-NN](https://arxiv.org/pdf/2404.04050.pdf) and [code](https://github.com/yangyangyang127/Seg-NN), which adapts Point-NN & Point-PN into 3D scene segmentation tasks 🔥.
 * For the first time, we conduct 3D analysis entirely requiring $\color{darkorange}{No\ Parameter\ or\ Training\.}$ 💥
 * The code of Point-PN has been released 📌.
 * The code of Point-NN for shape classification and part segmentation has been released. 
